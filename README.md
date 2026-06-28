@@ -5,9 +5,9 @@ snapshot. Normal RAG treats a codebase as its current state; chronicle treats it
 as a timeline, so it can answer *when* code changed, *why* it changed, and what
 it looked like *before* — citing commit + date + PR, not just file:line.
 
-> **Status: PR0 — scaffold.** This README documents getting the skeleton running
-> and passing the PR0 gate. The problem-first, headline-number README lands in
-> PR9. The eval harness (the highest-value deliverable) starts in PR1.
+> **Status: PR1 — git ingestion + auto ground-truth (eval first).** The eval
+> harness ground-truth comes before any retrieval cleverness. The problem-first,
+> headline-number README lands in PR9.
 
 ---
 
@@ -35,6 +35,40 @@ it looked like *before* — citing commit + date + PR, not just file:line.
 | Machine | all-local on the Mac (M4 Air); `OLLAMA_BASE_URL` defaults to localhost |
 
 ---
+
+## PR1: auto ground-truth eval set (no model involved)
+
+Git knows which commit introduced or last changed any line, so we auto-generate
+**labeled, git-verifiable** eval questions — and the generator self-checks every
+question with an independent verifier before writing it (`all_verified: true` in
+the manifest). Five templates:
+
+| Template | Question | Answer | Temporal? |
+| --- | --- | --- | --- |
+| `blame_commit` | which commit last modified line N of a file | full SHA | yes |
+| `commit_date` | on what UTC date was line N last changed | YYYY-MM-DD | yes |
+| `file_added` | which commit first added a file (follows renames) | full SHA | yes |
+| `blame_author` | who authored the last change to line N | author name | no |
+| `pr_for_commit` | which PR introduced a commit | PR number | no |
+
+Two tiers are produced (per the eval-set tiering decision): a small **dev set**
+(per-PR DeepEval gate) and the **full set** (milestones / final report).
+
+```bash
+# clone the target repo(s) locally, then (repeat --repo for a multi-repo set):
+chron eval-gen --repo /path/to/flask --repo /path/to/requests \
+  --out eval --full-size 160 --dev-size 40
+```
+
+Outputs `eval/full_set.jsonl`, `eval/dev_set.jsonl`, and `eval/manifest.json`
+(pins each repo + the HEAD SHA the set is anchored at, for reproducibility).
+Inspect a parsed history without generating via `chron ingest --repo /path/to/flask`.
+
+**Locked eval target: `pallets/flask` + `psf/requests`** — a multi-repo set so
+the harness is not overfit to one project's commit/PR conventions. Both have rich
+history, `(#NNNN)` PR links, and real renames/refactors. The committed `eval/`
+set is **160 questions (80 per repo), all git-verified**. (A third candidate,
+`pallets/click`, is smaller and good for fast iteration if needed.)
 
 ## Prerequisites
 
@@ -92,17 +126,25 @@ Postgres is reachable.
 
 ```
 src/chronicle/
-  cli.py            # `chron` commands (incl. `doctor` = the PR0 gate)
+  cli.py            # `chron` commands: doctor, migrate, ingest, eval-gen, ...
   config.py         # env/.env settings; OLLAMA_BASE_URL, JUDGE_MODEL, locked dim
   db.py             # psycopg connection + forward-only migration runner
   tracing.py        # Langfuse generation spans (best-effort, no-op if unconfigured)
+  git_ops.py        # strict subprocess git wrappers (blame, log, first-add, ...)
+  diff_parser.py    # strict unified-diff parser (crash on malformed input)
+  ingest.py         # walk history -> structured commits + per-file diffs
+  groundtruth/
+    schema.py       # EvalQuestion + JSONL (de)serialization
+    generator.py    # seeded, git-derived question generation
+    verifier.py     # independent re-derivation; mismatch is fatal
   models/
     base.py         # ModelClient protocol + LLMResponse
     gemini.py       # generation backend (lazy google-genai import)
     ollama.py       # judge backend (httpx)
 migrations/0001_base_schema.sql
+eval/               # committed dev_set/full_set/manifest (from pallets/flask)
 docker-compose.yml  # pgvector + Langfuse v2 (+ its own Postgres)
-tests/
+tests/              # incl. a real temp git repo fixture (no mocking)
 ```
 
 ## Operational notes (single Mac)
