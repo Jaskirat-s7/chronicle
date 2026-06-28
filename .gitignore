@@ -13,6 +13,9 @@ htmlcov/
 # Env / secrets
 .env
 
+# Locally cloned target repos for eval generation
+.chronicle_cache/
+
 # Editor / OS
 .DS_Store
 *.log

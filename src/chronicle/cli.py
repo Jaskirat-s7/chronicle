@@ -166,6 +166,113 @@ def ask(
     raise typer.Exit(code=0)
 
 
+def _repo_name(repo: Path) -> str:
+    """Derive an 'owner/repo' identifier from the origin remote, else dir name."""
+    from . import git_ops
+
+    try:
+        url = git_ops.run_git(repo, ["remote", "get-url", "origin"]).strip()
+    except Exception:
+        return repo.resolve().name
+    url = url.removesuffix(".git")
+    parts = url.replace(":", "/").split("/")
+    if len(parts) >= 2:
+        return "/".join(parts[-2:])
+    return repo.resolve().name
+
+
+@app.command()
+def ingest(
+    repo: Path = typer.Option(..., "--repo", help="Path to a local git repository."),
+    max_commits: int = typer.Option(200, "--max-commits", help="How many commits to walk."),
+) -> None:
+    """Walk history and strictly parse commits + diffs; print ingestion stats."""
+    from . import ingest as ingest_mod
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    changes = ingest_mod.walk_history(repo, max_commits=max_commits)
+    stats = ingest_mod.summarize(changes)
+    typer.echo(f"Ingested {_repo_name(repo)} (first {max_commits} commits):")
+    typer.echo(f"  commits parsed     : {stats.commits}")
+    typer.echo(f"  merges (meta only) : {stats.merges_skipped}")
+    typer.echo(f"  commits with PR ref: {stats.commits_with_pr}")
+    typer.echo(f"  files touched      : {stats.files_touched}")
+    typer.echo(f"  renames            : {stats.renames}")
+    typer.echo(f"  binary files       : {stats.binary_files}")
+    typer.echo(f"  hunks              : {stats.hunks}")
+    typer.echo(f"  lines +/-          : +{stats.lines_added} / -{stats.lines_removed}")
+
+
+@app.command("eval-gen")
+def eval_gen(
+    repo: Path = typer.Option(..., "--repo", help="Path to a local git repository."),
+    out: Path = typer.Option(Path("eval"), "--out", help="Output directory for the eval sets."),
+    full_size: int = typer.Option(120, "--full-size", help="Size of the milestone/full set."),
+    dev_size: int = typer.Option(30, "--dev-size", help="Size of the per-PR dev set."),
+    seed: int = typer.Option(7, "--seed", help="Deterministic sampling seed."),
+) -> None:
+    """Auto-generate git-verifiable labeled eval questions (no model involved)."""
+    import json
+    from datetime import datetime, timezone
+
+    from .groundtruth import GroundTruthGenerator, verify_all, write_jsonl
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    repo_name = _repo_name(repo)
+    gen = GroundTruthGenerator(repo, repo_name, seed=seed)
+    typer.echo(f"Repo: {repo_name} @ {gen.short}  (anchoring eval at this HEAD)")
+
+    pool = gen.generate(full_size)
+    if len(pool) < full_size:
+        typer.secho(
+            f"WARNING: only generated {len(pool)} questions (< {full_size}); "
+            "repo may be small.",
+            fg=typer.colors.YELLOW,
+        )
+
+    verified = verify_all(repo, pool)  # crashes on any mismatch
+    _echo_ok(f"verified {verified}/{len(pool)} questions against git")
+
+    dev = gen.stratified_subset(pool, dev_size)
+
+    n_full = write_jsonl(pool, out / "full_set.jsonl")
+    n_dev = write_jsonl(dev, out / "dev_set.jsonl")
+
+    by_template: dict[str, int] = {}
+    for q in pool:
+        by_template[q.template] = by_template.get(q.template, 0) + 1
+    temporal = sum(1 for q in pool if q.temporal)
+
+    manifest = {
+        "repo": repo_name,
+        "eval_sha": gen.eval_sha,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "seed": seed,
+        "full_size": n_full,
+        "dev_size": n_dev,
+        "temporal_count": temporal,
+        "non_temporal_count": len(pool) - temporal,
+        "by_template": by_template,
+        "all_verified": True,
+    }
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    typer.echo("")
+    typer.echo(f"Wrote {n_full} -> {out / 'full_set.jsonl'}")
+    typer.echo(f"Wrote {n_dev} -> {out / 'dev_set.jsonl'}")
+    typer.echo(f"Wrote manifest -> {out / 'manifest.json'}")
+    typer.echo("")
+    typer.echo("By template:")
+    for t, c in sorted(by_template.items()):
+        typer.echo(f"  {t:16s}: {c}")
+    typer.echo(f"  {'temporal':16s}: {temporal}")
+    typer.echo(f"  {'non-temporal':16s}: {len(pool) - temporal}")
+
+
 def main() -> None:
     app()
 

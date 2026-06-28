@@ -1,0 +1,18 @@
+{
+  "repo": "pallets/flask",
+  "eval_sha": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81",
+  "generated_at": "2026-06-28T09:09:23.991581+00:00",
+  "seed": 7,
+  "full_size": 120,
+  "dev_size": 30,
+  "temporal_count": 81,
+  "non_temporal_count": 39,
+  "by_template": {
+    "blame_author": 29,
+    "pr_for_commit": 10,
+    "file_added": 27,
+    "commit_date": 27,
+    "blame_commit": 27
+  },
+  "all_verified": true
+}
