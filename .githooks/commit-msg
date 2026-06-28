@@ -1,0 +1,13 @@
+#!/bin/sh
+# Project policy: never include an auto-added "Co-Authored-By: Claude/Anthropic"
+# trailer in commit messages. This hook strips it no matter what wrote it.
+# Enabled via:  git config core.hooksPath .githooks
+#
+# Note: two -e expressions instead of `\|` alternation — BSD/macOS sed does not
+# support GNU alternation in BRE.
+msg_file="$1"
+sed -i.bak \
+  -e '/^Co-[Aa]uthored-[Bb]y:.*[Cc]laude/d' \
+  -e '/^Co-[Aa]uthored-[Bb]y:.*[Aa]nthropic/d' \
+  "$msg_file"
+rm -f "$msg_file.bak"
