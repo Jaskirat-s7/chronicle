@@ -24,6 +24,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov>=5"]
+# Local embeddings + reranker (pulls torch). Needed to actually index/retrieve.
+embed = ["sentence-transformers>=3.0"]
+# Eval judge + metrics. RAGAS judge runs on local Ollama.
+eval = [
+  "ragas>=0.2,<0.3",
+  "deepeval>=1.0",
+  "datasets>=2.14",
+  "langchain-ollama>=0.2",
+]
 
 [project.scripts]
 chron = "chronicle.cli:main"
