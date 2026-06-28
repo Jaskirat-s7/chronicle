@@ -55,24 +55,20 @@ Two tiers are produced (per the eval-set tiering decision): a small **dev set**
 (per-PR DeepEval gate) and the **full set** (milestones / final report).
 
 ```bash
-# clone a target repo somewhere local, then:
-chron eval-gen --repo /path/to/flask --out eval --full-size 120 --dev-size 30
+# clone the target repo(s) locally, then (repeat --repo for a multi-repo set):
+chron eval-gen --repo /path/to/flask --repo /path/to/requests \
+  --out eval --full-size 160 --dev-size 40
 ```
 
 Outputs `eval/full_set.jsonl`, `eval/dev_set.jsonl`, and `eval/manifest.json`
-(pins repo + the HEAD SHA the set is anchored at, for reproducibility). Inspect
-a parsed history without generating with `chron ingest --repo /path/to/flask`.
+(pins each repo + the HEAD SHA the set is anchored at, for reproducibility).
+Inspect a parsed history without generating via `chron ingest --repo /path/to/flask`.
 
-**Candidate target repos** (rich history, GitHub `(#NNNN)` squash-merge PR links,
-real renames/refactors, fast to clone):
-
-1. **`pallets/flask`** — clean squash-merge history, well-linked PRs, ~5.5k
-   commits. *Used for the committed `eval/` set in this PR.*
-2. **`psf/requests`** — very rich history, classic renames/refactors.
-3. **`pallets/click`** — smaller and tidy; good for fast iteration.
-
-The committed set is from `pallets/flask` as a default — say which repo to
-**lock** as the canonical eval target and I'll regenerate.
+**Locked eval target: `pallets/flask` + `psf/requests`** — a multi-repo set so
+the harness is not overfit to one project's commit/PR conventions. Both have rich
+history, `(#NNNN)` PR links, and real renames/refactors. The committed `eval/`
+set is **160 questions (80 per repo), all git-verified**. (A third candidate,
+`pallets/click`, is smaller and good for fast iteration if needed.)
 
 ## Prerequisites
 

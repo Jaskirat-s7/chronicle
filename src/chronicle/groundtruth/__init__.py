@@ -6,12 +6,13 @@ written — so "git-verifiable" is asserted, not merely claimed.
 """
 
 from .schema import EvalQuestion, load_jsonl, write_jsonl
-from .generator import GroundTruthGenerator
+from .generator import GroundTruthGenerator, stratified_subset
 from .verifier import VerificationError, verify_all, verify_question
 
 __all__ = [
     "EvalQuestion",
     "GroundTruthGenerator",
+    "stratified_subset",
     "VerificationError",
     "verify_all",
     "verify_question",

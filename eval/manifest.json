@@ -1,18 +1,32 @@
 {
-  "repo": "pallets/flask",
-  "eval_sha": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81",
-  "generated_at": "2026-06-28T09:09:23.991581+00:00",
+  "repos": [
+    {
+      "repo": "pallets/flask",
+      "eval_sha": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81",
+      "count": 80
+    },
+    {
+      "repo": "psf/requests",
+      "eval_sha": "4ed3d1b3204caa6806a36125a39589044a02e807",
+      "count": 80
+    }
+  ],
+  "generated_at": "2026-06-28T09:22:07.251773+00:00",
   "seed": 7,
-  "full_size": 120,
-  "dev_size": 30,
-  "temporal_count": 81,
-  "non_temporal_count": 39,
+  "full_size": 160,
+  "dev_size": 40,
+  "temporal_count": 108,
+  "non_temporal_count": 52,
   "by_template": {
-    "blame_author": 29,
-    "pr_for_commit": 10,
-    "file_added": 27,
-    "commit_date": 27,
-    "blame_commit": 27
+    "file_added": 34,
+    "commit_date": 37,
+    "blame_author": 40,
+    "pr_for_commit": 12,
+    "blame_commit": 37
+  },
+  "by_repo": {
+    "pallets/flask": 80,
+    "psf/requests": 80
   },
   "all_verified": true
 }

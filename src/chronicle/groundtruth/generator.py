@@ -177,19 +177,31 @@ class GroundTruthGenerator:
     def stratified_subset(
         self, questions: list[EvalQuestion], size: int
     ) -> list[EvalQuestion]:
-        """A smaller dev set that still covers every template present."""
-        by_template: dict[str, list[EvalQuestion]] = {}
-        for q in questions:
-            by_template.setdefault(q.template, []).append(q)
+        return stratified_subset(questions, size, seed=self.rng.randint(0, 1 << 30))
 
-        chosen: list[EvalQuestion] = []
-        templates = list(by_template)
-        # Round-robin across templates for even coverage.
-        idx = 0
-        while len(chosen) < size and any(by_template.values()):
-            t = templates[idx % len(templates)]
-            bucket = by_template[t]
-            if bucket:
-                chosen.append(bucket.pop())
-            idx += 1
-        return chosen[:size]
+
+def stratified_subset(
+    questions: list[EvalQuestion], size: int, *, seed: int = 7
+) -> list[EvalQuestion]:
+    """A smaller set that still covers every template present.
+
+    Round-robins across templates for even coverage; shuffling each bucket keeps
+    repo representation balanced when `questions` spans multiple repos.
+    """
+    rng = random.Random(seed)
+    by_template: dict[str, list[EvalQuestion]] = {}
+    for q in questions:
+        by_template.setdefault(q.template, []).append(q)
+    for bucket in by_template.values():
+        rng.shuffle(bucket)
+
+    chosen: list[EvalQuestion] = []
+    templates = sorted(by_template)
+    idx = 0
+    while len(chosen) < size and any(by_template.values()):
+        t = templates[idx % len(templates)]
+        bucket = by_template[t]
+        if bucket:
+            chosen.append(bucket.pop())
+        idx += 1
+    return chosen[:size]

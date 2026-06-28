@@ -207,49 +207,54 @@ def ingest(
 
 @app.command("eval-gen")
 def eval_gen(
-    repo: Path = typer.Option(..., "--repo", help="Path to a local git repository."),
+    repo: list[Path] = typer.Option(..., "--repo", help="Local git repo(s); repeat for multi-repo sets."),
     out: Path = typer.Option(Path("eval"), "--out", help="Output directory for the eval sets."),
-    full_size: int = typer.Option(120, "--full-size", help="Size of the milestone/full set."),
-    dev_size: int = typer.Option(30, "--dev-size", help="Size of the per-PR dev set."),
+    full_size: int = typer.Option(120, "--full-size", help="Total size of the full set (split across repos)."),
+    dev_size: int = typer.Option(30, "--dev-size", help="Total size of the per-PR dev set."),
     seed: int = typer.Option(7, "--seed", help="Deterministic sampling seed."),
 ) -> None:
-    """Auto-generate git-verifiable labeled eval questions (no model involved)."""
+    """Auto-generate git-verifiable labeled eval questions (no model involved).
+
+    Pass --repo multiple times to build a combined, multi-repo set so the harness
+    is not overfit to one project's conventions.
+    """
     import json
     from datetime import datetime, timezone
 
-    from .groundtruth import GroundTruthGenerator, verify_all, write_jsonl
+    from .groundtruth import GroundTruthGenerator, stratified_subset, verify_all, write_jsonl
 
     settings = get_settings()
     configure_logging(settings.log_level)
 
-    repo_name = _repo_name(repo)
-    gen = GroundTruthGenerator(repo, repo_name, seed=seed)
-    typer.echo(f"Repo: {repo_name} @ {gen.short}  (anchoring eval at this HEAD)")
+    repos = list(repo)
+    per_repo = max(full_size // len(repos), 1)
 
-    pool = gen.generate(full_size)
-    if len(pool) < full_size:
-        typer.secho(
-            f"WARNING: only generated {len(pool)} questions (< {full_size}); "
-            "repo may be small.",
-            fg=typer.colors.YELLOW,
-        )
+    pool: list = []
+    repo_entries: list[dict] = []
+    for r in repos:
+        name = _repo_name(r)
+        gen = GroundTruthGenerator(r, name, seed=seed)
+        typer.echo(f"Repo: {name} @ {gen.short}  (target {per_repo})")
+        sub = gen.generate(per_repo)
+        verified = verify_all(r, sub)  # crashes on any mismatch
+        _echo_ok(f"  verified {verified}/{len(sub)} questions against git")
+        pool.extend(sub)
+        repo_entries.append({"repo": name, "eval_sha": gen.eval_sha, "count": len(sub)})
 
-    verified = verify_all(repo, pool)  # crashes on any mismatch
-    _echo_ok(f"verified {verified}/{len(pool)} questions against git")
-
-    dev = gen.stratified_subset(pool, dev_size)
+    dev = stratified_subset(pool, dev_size, seed=seed)
 
     n_full = write_jsonl(pool, out / "full_set.jsonl")
     n_dev = write_jsonl(dev, out / "dev_set.jsonl")
 
     by_template: dict[str, int] = {}
+    by_repo: dict[str, int] = {}
     for q in pool:
         by_template[q.template] = by_template.get(q.template, 0) + 1
+        by_repo[q.repo] = by_repo.get(q.repo, 0) + 1
     temporal = sum(1 for q in pool if q.temporal)
 
     manifest = {
-        "repo": repo_name,
-        "eval_sha": gen.eval_sha,
+        "repos": repo_entries,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "seed": seed,
         "full_size": n_full,
@@ -257,6 +262,7 @@ def eval_gen(
         "temporal_count": temporal,
         "non_temporal_count": len(pool) - temporal,
         "by_template": by_template,
+        "by_repo": by_repo,
         "all_verified": True,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -266,6 +272,9 @@ def eval_gen(
     typer.echo(f"Wrote {n_dev} -> {out / 'dev_set.jsonl'}")
     typer.echo(f"Wrote manifest -> {out / 'manifest.json'}")
     typer.echo("")
+    typer.echo("By repo:")
+    for r, c in sorted(by_repo.items()):
+        typer.echo(f"  {r:24s}: {c}")
     typer.echo("By template:")
     for t, c in sorted(by_template.items()):
         typer.echo(f"  {t:16s}: {c}")
