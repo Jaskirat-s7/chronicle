@@ -142,28 +142,147 @@ def doctor() -> None:
 @app.command()
 def index(
     repo: Path = typer.Option(..., "--repo", help="Path to the target git repository."),
+    name: str = typer.Option(None, "--name", help="Repo identifier (default: from origin remote)."),
 ) -> None:
-    """Ingest a repo's history into the index. (Implemented in PR1/PR2.)"""
-    typer.secho(
-        f"`chron index` is a PR0 skeleton — git ingestion lands in PR1, "
-        f"snapshot indexing in PR2. (requested repo: {repo})",
-        fg=typer.colors.YELLOW,
+    """Index a repo's current snapshot into pgvector (chunk -> embed -> store)."""
+    from .embeddings import get_embedder
+    from .indexer import index_snapshot
+    from .tracing import flush_traces
+    from .vector_store import VectorStore
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    repo_name = name or _repo_name(repo)
+
+    embedder = get_embedder(settings)
+    store = VectorStore(settings.database_url)
+    typer.echo(f"Indexing snapshot of {repo_name} ...")
+    res = index_snapshot(repo, repo_name, embedder, store)
+    _echo_ok(
+        f"indexed {res.chunks_indexed} chunks from {res.files_indexed} files "
+        f"@ {res.head_sha[:10]}"
     )
-    raise typer.Exit(code=0)
+    flush_traces()
 
 
 @app.command()
 def ask(
     question: str = typer.Argument(..., help="A natural-language question about the repo's history."),
+    repo: str = typer.Option(None, "--repo", help="Repo name to scope retrieval to."),
+    top_k: int = typer.Option(8, "--top-k", help="How many chunks to ground the answer in."),
     as_of: str = typer.Option(None, "--as-of", help="Answer as of this commit/date (PR3+)."),
 ) -> None:
-    """Ask a question about the repo's history. (Implemented in PR2+.)"""
-    typer.secho(
-        "`chron ask` is a PR0 skeleton — retrieval + generation land in PR2. "
-        f"(question: {question!r}, as_of: {as_of!r})",
-        fg=typer.colors.YELLOW,
+    """Ask a question; retrieve (hybrid+RRF+rerank) and generate a cited answer."""
+    from .answer import answer_question
+    from .embeddings import get_embedder
+    from .models import get_generation_client
+    from .reranker import get_reranker
+    from .retrieval import HybridRetriever
+    from .tracing import flush_traces
+    from .vector_store import VectorStore
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    if as_of:
+        typer.secho("--as-of is not supported until PR3 (temporal index).", fg=typer.colors.YELLOW)
+
+    retriever = HybridRetriever(
+        VectorStore(settings.database_url),
+        get_embedder(settings),
+        get_reranker(settings),
     )
-    raise typer.Exit(code=0)
+    result = answer_question(
+        question, retriever, get_generation_client(settings), repo=repo, top_k=top_k
+    )
+    typer.echo(result.answer)
+    typer.echo("")
+    typer.secho("Sources:", fg=typer.colors.BLUE)
+    for c in result.retrieved:
+        typer.echo(
+            f"  {c.file_path}:{c.line_start}-{c.line_end} @ {c.commit_sha[:10]} "
+            f"{c.commit_date:%Y-%m-%d}"
+        )
+    flush_traces()
+
+
+@app.command("eval-run")
+def eval_run(
+    eval_set: Path = typer.Option(Path("eval/dev_set.jsonl"), "--set", help="Eval set JSONL."),
+    out: Path = typer.Option(Path("eval/baseline_report.json"), "--out", help="Report output."),
+    top_k: int = typer.Option(8, "--top-k"),
+    ragas: bool = typer.Option(False, "--ragas", help="Also compute RAGAS (needs Ollama judge)."),
+    save_floor: bool = typer.Option(False, "--save-floor", help="Record this report as the DeepEval floor."),
+    floor: Path = typer.Option(Path("eval/floor.json"), "--floor"),
+    label: str = typer.Option("baseline", "--label"),
+) -> None:
+    """Run the eval set through retrieve+generate and write a metrics report."""
+    import json
+
+    from .answer import answer_question
+    from .embeddings import get_embedder
+    from .evalkit import deepeval_gate
+    from .evalkit.harness import ragas_samples, run_eval
+    from .evalkit.ragas_eval import run_ragas
+    from .evalkit.report import build_report, pretty_print
+    from .groundtruth import load_jsonl
+    from .models import get_generation_client
+    from .reranker import get_reranker
+    from .retrieval import HybridRetriever
+    from .tracing import flush_traces
+    from .vector_store import VectorStore
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+
+    questions = load_jsonl(eval_set)
+    retriever = HybridRetriever(
+        VectorStore(settings.database_url), get_embedder(settings), get_reranker(settings)
+    )
+    generator = get_generation_client(settings)
+
+    def answer_fn(qtext: str, repo: str):
+        return answer_question(qtext, retriever, generator, repo=repo, top_k=top_k)
+
+    typer.echo(f"Running eval over {len(questions)} questions from {eval_set} ...")
+    run = run_eval(questions, answer_fn)
+    report = build_report(run, label=label)
+    if ragas:
+        typer.echo("Computing RAGAS (Ollama judge) ...")
+        report["ragas"] = run_ragas(ragas_samples(run), settings)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
+    typer.echo("")
+    typer.echo(pretty_print(report))
+    typer.echo("")
+    _echo_ok(f"wrote report -> {out}")
+    if save_floor:
+        deepeval_gate.save_floor(report, floor)
+        _echo_ok(f"recorded DeepEval floor -> {floor}")
+    flush_traces()
+
+
+@app.command("eval-gate")
+def eval_gate(
+    report: Path = typer.Option(Path("eval/baseline_report.json"), "--report"),
+    floor: Path = typer.Option(Path("eval/floor.json"), "--floor"),
+    tolerance: float = typer.Option(0.02, "--tolerance"),
+) -> None:
+    """Fail (exit 1) if the report regresses any tracked metric below the floor."""
+    from .evalkit import deepeval_gate
+
+    cur = deepeval_gate.load_floor(report)
+    fl = deepeval_gate.load_floor(floor)
+    res = deepeval_gate.compare_to_floor(cur, fl, tolerance=tolerance)
+    deepeval_gate.record_to_deepeval(cur, fl)
+
+    typer.echo(f"Checked {len(res.checked)} tracked metric(s) vs floor (tol={tolerance}).")
+    if res.passed:
+        typer.secho("GATE PASS — no regression below floor.", fg=typer.colors.GREEN)
+        return
+    for r in res.regressions:
+        _echo_fail(f"{r.metric}: floor={r.floor:.3f} current={r.current:.3f}")
+    raise typer.Exit(code=1)
 
 
 def _repo_name(repo: Path) -> str:

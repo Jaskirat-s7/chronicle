@@ -5,9 +5,9 @@ snapshot. Normal RAG treats a codebase as its current state; chronicle treats it
 as a timeline, so it can answer *when* code changed, *why* it changed, and what
 it looked like *before* — citing commit + date + PR, not just file:line.
 
-> **Status: PR1 — git ingestion + auto ground-truth (eval first).** The eval
-> harness ground-truth comes before any retrieval cleverness. The problem-first,
-> headline-number README lands in PR9.
+> **Status: PR2 — baseline retrieval + RAGAS/DeepEval.** Snapshot-only retrieval
+> (no temporal index yet) wired to the eval harness, so PR3+ has a measured floor
+> to beat. The problem-first, headline-number README lands in PR9.
 
 ---
 
@@ -69,6 +69,44 @@ the harness is not overfit to one project's commit/PR conventions. Both have ric
 history, `(#NNNN)` PR links, and real renames/refactors. The committed `eval/`
 set is **160 questions (80 per repo), all git-verified**. (A third candidate,
 `pallets/click`, is smaller and good for fast iteration if needed.)
+
+## PR2: baseline retrieval + eval harness
+
+The **snapshot-only** baseline (no history yet — that's PR3): every chunk is
+tagged with the HEAD commit, so "when did this change" is expected to score low.
+That is the point — it's the floor the temporal index must beat.
+
+Pipeline: `chunk` (overlapping line windows) → `embed` (Qwen3-Embedding-0.6B,
+1024-d) → store in **pgvector** → **hybrid** retrieve (vector `<=>` cosine +
+Postgres FTS `ts_rank`) → **RRF** fuse → **bge-reranker-v2-m3** → generate a
+cited answer via **Gemini**.
+
+Metrics (deterministic, git-derived ground truth): per-template **answer
+accuracy** (e.g. does the answer contain the gold SHA), **hit@k**, **MRR**,
+**nDCG**, split temporal vs non-temporal. Plus **RAGAS** (faithfulness, answer
+relevancy, context precision/recall; judge on local Ollama) and
+cost/latency/calls. **DeepEval** records the regression floor; later PRs fail the
+gate if they drop a tracked metric below floor − tolerance.
+
+```bash
+# 0. extras for the live path
+pip install -e ".[dev,embed,eval]"
+docker compose up -d && chron migrate          # 0001 base + 0002 HNSW index
+ollama pull qwen2.5:3b                          # RAGAS judge
+
+# 1. index the snapshot of each locked eval repo
+chron index --repo /path/to/flask
+chron index --repo /path/to/requests
+
+# 2. baseline report over the dev set, compute RAGAS, record the floor
+chron eval-run --set eval/dev_set.jsonl --ragas --save-floor
+
+# 3. the merge gate (later PRs must not regress below the floor)
+chron eval-gate
+```
+
+`eval-run` writes `eval/baseline_report.json`; `--save-floor` writes
+`eval/floor.json`. Use `--set eval/full_set.jsonl` for milestone runs.
 
 ## Prerequisites
 
@@ -133,10 +171,23 @@ src/chronicle/
   git_ops.py        # strict subprocess git wrappers (blame, log, first-add, ...)
   diff_parser.py    # strict unified-diff parser (crash on malformed input)
   ingest.py         # walk history -> structured commits + per-file diffs
+  chunking.py       # snapshot line-window chunker (baseline)
+  embeddings.py     # Qwen3-Embedding via sentence-transformers (lazy)
+  reranker.py       # bge-reranker-v2-m3 cross-encoder (lazy)
+  vector_store.py   # pgvector dense + Postgres FTS search
+  retrieval.py      # pure rrf_fuse + HybridRetriever (fuse -> rerank)
+  answer.py         # retrieve -> cited prompt -> Gemini
+  indexer.py        # snapshot indexing pipeline
   groundtruth/
     schema.py       # EvalQuestion + JSONL (de)serialization
     generator.py    # seeded, git-derived question generation
     verifier.py     # independent re-derivation; mismatch is fatal
+  evalkit/
+    metrics.py      # hit@k, MRR, nDCG, answer-match (deterministic)
+    harness.py      # run eval set -> per-question results
+    report.py       # aggregate metrics + cost/latency/calls
+    ragas_eval.py   # RAGAS via local Ollama judge (lazy)
+    deepeval_gate.py# regression-floor gate (pure comparator)
   models/
     base.py         # ModelClient protocol + LLMResponse
     gemini.py       # generation backend (lazy google-genai import)
